@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>QR Scanner — Auto Open + Galeri</title>
+  <style>
+    :root{--bg:#0b1220;--accent:#10b981;--muted:#98a2b3}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Arial,sans-serif;background:linear-gradient(180deg,#061826 0%, #071429 100%);color:#fff}
+    .wrap{max-width:900px;margin:28px auto;padding:20px;background:rgba(255,255,255,0.02);border-radius:12px;box-shadow:0 6px 30px rgba(2,6,23,0.6)}
+    header{display:flex;align-items:center;justify-content:space-between}
+    h1{font-size:18px;margin:0}
+    p.lead{margin:4px 0 16px;color:var(--muted)}
+
+    .video-wrap{position:relative;border-radius:8px;overflow:hidden;background:#000;height:420px;display:flex;align-items:center;justify-content:center}
+    video{width:100%;height:100%;object-fit:cover}
+    canvas{display:none}
+    .overlay{position:absolute;left:12px;top:12px;background:rgba(0,0,0,0.45);padding:6px 10px;border-radius:8px;font-size:13px}
+
+    .btns{margin-top:12px;display:flex;flex-wrap:wrap;gap:8px}
+    button{background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.15);padding:8px 10px;border-radius:8px;cursor:pointer}
+    button.primary{border-color:var(--accent);color:var(--accent)}
+
+    .result{margin-top:16px;padding:10px;background:rgba(255,255,255,0.04);border-radius:8px;font-size:14px;min-height:50px}
+    .hint{font-size:13px;color:var(--muted);margin-top:6px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>QR Scanner — Auto Open + Galeri</h1>
+        <p class="lead">Arahkan kamera atau pilih gambar dari galeri. Jika berisi URL, otomatis dibuka di browser dengan suara.</p>
+      </div>
+    </header>
+
+    <div class="video-wrap">
+      <video id="video" playsinline></video>
+      <canvas id="canvas"></canvas>
+      <div class="overlay">Status: <span id="status">memulai...</span></div>
+    </div>
+
+    <div class="btns">
+      <button id="copyBtn">Salin</button>
+      <button id="openBtn">Buka (jika URL)</button>
+      <button id="downloadBtn">Download hasil</button>
+      <button id="galleryBtn">Ambil dari Galeri</button>
+      <input type="file" id="galleryInput" accept="image/*" style="display:none">
+    </div>
+
+    <div class="result" id="result">— belum ada hasil —</div>
+    <div class="hint">Catatan: pastikan HTTPS agar kamera berfungsi maksimal.</div>
+  </div>
+
+  <audio id="beep" src="https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg" preload="auto"></audio>
+
+  <script src="https://unpkg.com/jsqr/dist/jsQR.js"></script>
+  <script>
+    const video=document.getElementById('video');
+    const canvas=document.getElementById('canvas');
+    const ctx=canvas.getContext('2d');
+    const statusEl=document.getElementById('status');
+    const resultEl=document.getElementById('result');
+    const beep=document.getElementById('beep');
+    const galleryBtn=document.getElementById('galleryBtn');
+    const galleryInput=document.getElementById('galleryInput');
+
+    let stream=null, scanning=false, scanLoopId=null;
+
+    function logStatus(t){statusEl.textContent=t;}
+
+    async function startCamera(){
+      try{
+        stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});
+        video.srcObject=stream;
+        await video.play();
+        scanning=true;
+        canvas.width=video.videoWidth||640;
+        canvas.height=video.videoHeight||480;
+        logStatus('kamera aktif');
+        tick();
+      }catch(e){
+        logStatus('gagal akses kamera: '+e.message);
+        resultEl.textContent='Tidak bisa akses kamera: '+e.message;
+      }
+    }
+
+    function stopCamera(){
+      scanning=false;
+      if(scanLoopId) cancelAnimationFrame(scanLoopId);
+      if(stream){stream.getTracks().forEach(t=>t.stop());}
+      logStatus('berhenti');
+    }
+
+    function looksLikeURL(t){
+      try{const u=new URL(t);return ['http:','https:'].includes(u.protocol);}catch(e){return /^https?:\/\//i.test(t);}
+    }
+
+    function tick(){
+      if(!scanning)return;
+      if(video.readyState===video.HAVE_ENOUGH_DATA){
+        canvas.width=video.videoWidth;
+        canvas.height=video.videoHeight;
+        ctx.drawImage(video,0,0,canvas.width,canvas.height);
+        const img=ctx.getImageData(0,0,canvas.width,canvas.height);
+        const code=jsQR(img.data,img.width,img.height,{inversionAttempts:'dontInvert'});
+        if(code){handleResult(code.data);stopCamera();return;}
+        else{logStatus('mencari...');}
+      }
+      scanLoopId=requestAnimationFrame(tick);
+    }
+
+    function handleResult(data){
+      if(!data){resultEl.textContent='No QR Found / Failed';return;}
+      beep.play();
+      resultEl.textContent=data;
+      logStatus('QR ditemukan');
+      if(looksLikeURL(data)){
+        resultEl.textContent='URL terdeteksi: '+data+'\nMembuka...';
+        setTimeout(()=>window.location.assign(data),400);
+      }
+    }
+
+    document.getElementById('copyBtn').onclick=()=>navigator.clipboard.writeText(resultEl.textContent);
+    document.getElementById('openBtn').onclick=()=>{
+      const d=resultEl.textContent.split('\n')[0];
+      if(looksLikeURL(d))window.open(d,'_blank');else alert('Bukan URL');
+    };
+    document.getElementById('downloadBtn').onclick=()=>{
+      const blob=new Blob([resultEl.textContent],{type:'text/plain'});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');a.href=url;a.download='qr-result.txt';a.click();URL.revokeObjectURL(url);
+    };
+
+    galleryBtn.onclick=()=>galleryInput.click();
+    galleryInput.onchange=()=>{
+      const file=galleryInput.files[0];
+      if(!file)return;
+      const reader=new FileReader();
+      reader.onload=e=>{
+        const img=new Image();
+        img.onload=()=>{
+          canvas.width=img.width;
+          canvas.height=img.height;
+          ctx.drawImage(img,0,0,img.width,img.height);
+          const data=ctx.getImageData(0,0,img.width,img.height);
+          const code=jsQR(data.data,data.width,data.height,{inversionAttempts:'dontInvert'});
+          if(code)handleResult(code.data);else{resultEl.textContent='No QR Found / Failed';beep.play();}
+        };
+        img.src=e.target.result;
+      };
+      reader.readAsDataURL(file);
+    };
+
+    window.addEventListener('load',()=>{if(window.isSecureContext){startCamera();}else{logStatus('butuh HTTPS');}});
+  </script>
+</body>
+</html>
